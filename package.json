@@ -1,0 +1,9 @@
+{
+  "name": "alodd-fit-engine",
+  "version": "1.0.0",
+  "private": true,
+  "description": "ALODD Fit Engine backend - Netlify serverless function calling the Claude API to recommend clothing sizes.",
+  "devDependencies": {
+    "@netlify/functions": "^2.8.2"
+  }
+}
