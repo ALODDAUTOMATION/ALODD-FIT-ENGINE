@@ -31,11 +31,21 @@ const CH616E_TABLE = [
   { size: "46", girth: 260.0, instep: 268.0, length: 328.4 },
 ];
 
+const CORS_HEADERS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type",
+};
+
 export default async (req: Request, context: Context) => {
+  if (req.method === "OPTIONS") {
+    return new Response(null, { status: 204, headers: CORS_HEADERS });
+  }
+
   if (req.method !== "POST") {
     return new Response(JSON.stringify({ success: false, error: "Method not allowed" }), {
       status: 405,
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...CORS_HEADERS },
     });
   }
 
@@ -45,7 +55,7 @@ export default async (req: Request, context: Context) => {
   } catch {
     return new Response(JSON.stringify({ success: false, error: "Invalid JSON body" }), {
       status: 400,
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...CORS_HEADERS },
     });
   }
 
@@ -53,7 +63,7 @@ export default async (req: Request, context: Context) => {
   if (!apiKey) {
     return new Response(
       JSON.stringify({ success: false, error: "Server misconfigured: missing ANTHROPIC_API_KEY" }),
-      { status: 500, headers: { "Content-Type": "application/json" } }
+      { status: 500, headers: { "Content-Type": "application/json", ...CORS_HEADERS } }
     );
   }
 
@@ -62,7 +72,7 @@ export default async (req: Request, context: Context) => {
   if (!length || !standingGirth || !verticalGirth || !instep) {
     return new Response(
       JSON.stringify({ success: false, error: "Missing required measurements" }),
-      { status: 400, headers: { "Content-Type": "application/json" } }
+      { status: 400, headers: { "Content-Type": "application/json", ...CORS_HEADERS } }
     );
   }
 
@@ -108,7 +118,7 @@ Respond with strict JSON per the schema.`;
       const errText = await anthropicRes.text();
       return new Response(
         JSON.stringify({ success: false, error: "Claude API error", details: errText }),
-        { status: 502, headers: { "Content-Type": "application/json" } }
+        { status: 502, headers: { "Content-Type": "application/json", ...CORS_HEADERS } }
       );
     }
 
@@ -122,18 +132,18 @@ Respond with strict JSON per the schema.`;
     } catch {
       return new Response(
         JSON.stringify({ success: false, error: "Could not parse Claude response", raw: rawText }),
-        { status: 502, headers: { "Content-Type": "application/json" } }
+        { status: 502, headers: { "Content-Type": "application/json", ...CORS_HEADERS } }
       );
     }
 
     return new Response(JSON.stringify(parsed), {
       status: 200,
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...CORS_HEADERS },
     });
   } catch (err) {
     return new Response(
       JSON.stringify({ success: false, error: "Unexpected server error", details: String(err) }),
-      { status: 500, headers: { "Content-Type": "application/json" } }
+      { status: 500, headers: { "Content-Type": "application/json", ...CORS_HEADERS } }
     );
   }
 };
