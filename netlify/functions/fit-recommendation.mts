@@ -108,7 +108,7 @@ Respond with strict JSON per the schema.`;
       },
       body: JSON.stringify({
         model: "claude-sonnet-5",
-        max_tokens: 500,
+        max_tokens: 1024,
         system: systemPrompt,
         messages: [{ role: "user", content: userPrompt }],
       }),
@@ -123,7 +123,24 @@ Respond with strict JSON per the schema.`;
     }
 
     const data = await anthropicRes.json();
-    const rawText = data?.content?.[0]?.text ?? "{}";
+
+    // Find the first text-type content block (Claude may also return "thinking" blocks first)
+    const textBlock = Array.isArray(data?.content)
+      ? data.content.find((block: any) => block?.type === "text" && typeof block?.text === "string")
+      : null;
+    const rawText = textBlock?.text ?? "";
+
+    if (!rawText) {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          error: "Empty response from Claude",
+          details: JSON.stringify(data),
+        }),
+        { status: 502, headers: { "Content-Type": "application/json", ...CORS_HEADERS } }
+      );
+    }
+
     const cleaned = rawText.replace(/```json|```/g, "").trim();
 
     let parsed;
