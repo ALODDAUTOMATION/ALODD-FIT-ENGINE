@@ -5,8 +5,7 @@ import type { Context, Config } from "@netlify/functions";
 
 interface FitRequestBody {
   length?: number;
-  standingGirth?: number;
-  verticalGirth?: number;
+  girth?: number;
   instep?: number;
   model?: string;
   sessionId?: string;
@@ -67,9 +66,9 @@ export default async (req: Request, context: Context) => {
     );
   }
 
-  const { length, standingGirth, verticalGirth, instep, model } = body;
+  const { length, girth, instep, model } = body;
 
-  if (!length || !standingGirth || !verticalGirth || !instep) {
+  if (!length || !girth || !instep) {
     return new Response(
       JSON.stringify({ success: false, error: "Missing required measurements" }),
       { status: 400, headers: { "Content-Type": "application/json", ...CORS_HEADERS } }
@@ -84,8 +83,7 @@ Always respond with STRICT JSON only, no prose, no markdown fences, matching exa
 
   const userPrompt = `Customer foot measurements (mm):
 - Length: ${length}
-- Standing girth: ${standingGirth}
-- Vertical girth: ${verticalGirth}
+- Girth: ${girth}
 - Instep circumference: ${instep}
 - Shoe model: ${model || "standard last, no specific model"}
 
@@ -93,8 +91,9 @@ Reference last size chart (Calpierre CH616E, mm):
 ${JSON.stringify(CH616E_TABLE)}
 
 The last needs roughly 27mm of extra length beyond the foot length for toe clearance.
-Compare standing girth against the reference girth for the chosen size to determine width profile:
+Compare girth against the reference girth for the chosen size to determine width profile:
 more than 3mm over reference = Wide (E), more than 3mm under = Narrow (C), otherwise Standard (D).
+Use the instep measurement to sanity-check the width profile against the reference instep value.
 Write a short, warm fitNote (1-2 sentences) explaining the recommendation in the ALODD brand voice.
 Respond with strict JSON per the schema.`;
 
@@ -124,7 +123,6 @@ Respond with strict JSON per the schema.`;
 
     const data = await anthropicRes.json();
 
-    // Find the first text-type content block (Claude may also return "thinking" blocks first)
     const textBlock = Array.isArray(data?.content)
       ? data.content.find((block: any) => block?.type === "text" && typeof block?.text === "string")
       : null;
