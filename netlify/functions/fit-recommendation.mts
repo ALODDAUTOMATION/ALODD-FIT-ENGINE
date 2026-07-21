@@ -1,6 +1,7 @@
 import type { Context, Config } from "@netlify/functions";
 
-// ALODD Phygital Fit Engine — recommends a shoe size using Claude.
+// ALODD Phygital Fit Engine — computes a shoe size recommendation deterministically
+// from the Calpierre CH616E last chart. No external API call: instant response.
 // Called from the Shopify /fit-engine page via fetch("/api/fit-recommendation", { method: "POST", body: ... })
 
 interface FitRequestBody {
@@ -12,7 +13,14 @@ interface FitRequestBody {
   customerEmail?: string;
 }
 
-const CH616E_TABLE = [
+interface SizeRow {
+  size: string;
+  girth: number;
+  instep: number;
+  length: number;
+}
+
+const CH616E_TABLE: SizeRow[] = [
   { size: "39", girth: 228.5, instep: 236.5, length: 282.2 },
   { size: "39.5", girth: 230.5, instep: 238.5, length: 282.2 },
   { size: "40", girth: 233.0, instep: 241.0, length: 288.8 },
@@ -30,17 +38,67 @@ const CH616E_TABLE = [
   { size: "46", girth: 260.0, instep: 268.0, length: 328.4 },
 ];
 
+const TOE_CLEARANCE_MM = 27;
+
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type",
 };
 
+function pickBestRow(targetLastLength: number, girth: number, instep: number): SizeRow {
+  let best = CH616E_TABLE[0];
+  let bestScore = Infinity;
+  for (const row of CH616E_TABLE) {
+    const score =
+      Math.abs(targetLastLength - row.length) * 1.0 +
+      Math.abs(girth - row.girth) * 0.6 +
+      Math.abs(instep - row.instep) * 0.4;
+    if (score < bestScore) {
+      bestScore = score;
+      best = row;
+    }
+  }
+  return best;
+}
+
+function widthFromDiff(diff: number): { widthProfile: "C" | "D" | "E"; widthLabel: string } {
+  if (diff > 3) return { widthProfile: "E", widthLabel: "Wide" };
+  if (diff < -3) return { widthProfile: "C", widthLabel: "Narrow" };
+  return { widthProfile: "D", widthLabel: "Standard" };
+}
+
+function pick<T>(arr: T[]): T {
+  return arr[Math.floor(Math.random() * arr.length)];
+}
+
+function buildFitNote(size: string, widthLabel: string, confidence: number): string {
+  const w = widthLabel.toLowerCase();
+  if (confidence >= 90) {
+    return pick([
+      `Your measurements align closely with our ${size} EU last — expect a ${w} fit with confident, all-day comfort.`,
+      `A precise match: ${size} EU, ${w} profile. This is as close to made-to-measure as ready sizing gets.`,
+      `Your ${size} EU size is a strong match for the Calpierre last — ${w} width, built for comfort from the first step.`,
+    ]);
+  }
+  if (confidence >= 75) {
+    return pick([
+      `Based on your measurements, ${size} EU should serve you well, with a ${w} profile close to your foot's true shape.`,
+      `We recommend ${size} EU in a ${w} fit — a solid match, with a touch of natural break-in expected.`,
+      `Your foot falls close to our ${size} EU last, ${w} profile. A comfortable, dependable choice.`,
+    ]);
+  }
+  return pick([
+    `Your ${size} EU size is our best match, though your foot sits between two of our reference profiles — ${w} is our closest recommendation.`,
+    `We recommend starting with ${size} EU, ${w} width — your measurements sit at the edge of this range, so a quick try-on is worth it.`,
+    `${size} EU, ${w} fit, is our nearest match for your measurements — slightly outside our most common range, but a great starting point.`,
+  ]);
+}
+
 export default async (req: Request, context: Context) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { status: 204, headers: CORS_HEADERS });
   }
-
   if (req.method !== "POST") {
     return new Response(JSON.stringify({ success: false, error: "Method not allowed" }), {
       status: 405,
@@ -58,16 +116,7 @@ export default async (req: Request, context: Context) => {
     });
   }
 
-  const apiKey = Netlify.env.get("ANTHROPIC_API_KEY");
-  if (!apiKey) {
-    return new Response(
-      JSON.stringify({ success: false, error: "Server misconfigured: missing ANTHROPIC_API_KEY" }),
-      { status: 500, headers: { "Content-Type": "application/json", ...CORS_HEADERS } }
-    );
-  }
-
-  const { length, girth, instep, model } = body;
-
+  const { length, girth, instep } = body;
   if (!length || !girth || !instep) {
     return new Response(
       JSON.stringify({ success: false, error: "Missing required measurements" }),
@@ -75,83 +124,35 @@ export default async (req: Request, context: Context) => {
     );
   }
 
-  const systemPrompt = `You are the ALODD Phygital Fit Engine, an expert shoe-fit assistant.
-You are given a customer's foot measurements in millimetres and a reference last size chart (Calpierre CH616E).
-Determine the best EU size, a width profile (C = narrow, D = standard, E = wide), and a confidence percentage (0-100).
-Always respond with STRICT JSON only, no prose, no markdown fences, matching exactly this shape:
-{"success": true, "result": {"size": string, "sizeSystem": "EU", "confidence": number, "widthProfile": "C"|"D"|"E", "widthLabel": "Narrow"|"Standard"|"Wide", "fitNote": string}}`;
-
-  const userPrompt = `Customer foot measurements (mm):
-- Length: ${length}
-- Girth: ${girth}
-- Instep circumference: ${instep}
-- Shoe model: ${model || "standard last, no specific model"}
-
-Reference last size chart (Calpierre CH616E, mm):
-${JSON.stringify(CH616E_TABLE)}
-
-The last needs roughly 27mm of extra length beyond the foot length for toe clearance.
-Compare girth against the reference girth for the chosen size to determine width profile:
-more than 3mm over reference = Wide (E), more than 3mm under = Narrow (C), otherwise Standard (D).
-Use the instep measurement to sanity-check the width profile against the reference instep value.
-Write a short, warm fitNote (1-2 sentences) explaining the recommendation in the ALODD brand voice.
-Respond with strict JSON per the schema.`;
-
   try {
-    const anthropicRes = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify({
-        model: "claude-haiku-4-5-20251001",
-        max_tokens: 4096,
-        system: systemPrompt,
-        messages: [{ role: "user", content: userPrompt }],
-      }),
-    });
+    const targetLastLength = length + TOE_CLEARANCE_MM;
+    const matchedRow = pickBestRow(targetLastLength, girth, instep);
 
-    if (!anthropicRes.ok) {
-      const errText = await anthropicRes.text();
-      return new Response(
-        JSON.stringify({ success: false, error: "Claude API error", details: errText }),
-        { status: 502, headers: { "Content-Type": "application/json", ...CORS_HEADERS } }
-      );
-    }
+    const girthDiff = girth - matchedRow.girth;
+    const instepDiff = instep - matchedRow.instep;
+    const combinedDiff = (girthDiff + instepDiff) / 2;
 
-    const data = await anthropicRes.json();
+    const { widthProfile, widthLabel } = widthFromDiff(combinedDiff);
 
-    const textBlock = Array.isArray(data?.content)
-      ? data.content.find((block: any) => block?.type === "text" && typeof block?.text === "string")
-      : null;
-    const rawText = textBlock?.text ?? "";
+    const totalDeviation =
+      Math.abs(targetLastLength - matchedRow.length) +
+      Math.abs(girthDiff) +
+      Math.abs(instepDiff);
 
-    if (!rawText) {
-      return new Response(
-        JSON.stringify({
-          success: false,
-          error: "Empty response from Claude",
-          details: JSON.stringify(data),
-        }),
-        { status: 502, headers: { "Content-Type": "application/json", ...CORS_HEADERS } }
-      );
-    }
+    const confidence = Math.max(55, Math.min(98, Math.round(97 - totalDeviation * 1.1)));
 
-    const cleaned = rawText.replace(/```json|```/g, "").trim();
+    const fitNote = buildFitNote(matchedRow.size, widthLabel, confidence);
 
-    let parsed;
-    try {
-      parsed = JSON.parse(cleaned);
-    } catch {
-      return new Response(
-        JSON.stringify({ success: false, error: "Could not parse Claude response", raw: rawText }),
-        { status: 502, headers: { "Content-Type": "application/json", ...CORS_HEADERS } }
-      );
-    }
+    const result = {
+      size: matchedRow.size,
+      sizeSystem: "EU",
+      confidence,
+      widthProfile,
+      widthLabel,
+      fitNote,
+    };
 
-    return new Response(JSON.stringify(parsed), {
+    return new Response(JSON.stringify({ success: true, result }), {
       status: 200,
       headers: { "Content-Type": "application/json", ...CORS_HEADERS },
     });
