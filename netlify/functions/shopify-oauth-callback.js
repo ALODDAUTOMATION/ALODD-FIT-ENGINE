@@ -19,13 +19,13 @@ exports.handler = async (event) => {
     };
   }
 
-  const clientId = process.env.SHOPIFY_APP_CLIENT_ID;
+  const clientId = process.env.SHOPIFY_APP_CLIENT_ID || "d22d57f3b1df68deb91c214e3d4c9fdd";
   const clientSecret = process.env.SHOPIFY_APP_CLIENT_SECRET;
 
-  if (!clientId || !clientSecret) {
+  if (!clientSecret) {
     return {
       statusCode: 500,
-      body: "Server misconfigured: SHOPIFY_APP_CLIENT_ID / SHOPIFY_APP_CLIENT_SECRET env vars not set.",
+      body: "Server misconfigured: SHOPIFY_APP_CLIENT_SECRET env var not set.",
     };
   }
 

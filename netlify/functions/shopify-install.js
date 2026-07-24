@@ -16,13 +16,9 @@ exports.handler = async (event) => {
     };
   }
 
-  const clientId = process.env.SHOPIFY_APP_CLIENT_ID;
-  if (!clientId) {
-    return {
-      statusCode: 500,
-      body: "Server misconfigured: SHOPIFY_APP_CLIENT_ID env var not set.",
-    };
-  }
+  // Netlify env vars weren't propagating reliably, so this falls back to a
+  // hardcoded value. TEMPORARY — remove once the token has been retrieved.
+  const clientId = process.env.SHOPIFY_APP_CLIENT_ID || "d22d57f3b1df68deb91c214e3d4c9fdd";
 
   const redirectUri = "https://alodd-fit-engine.netlify.app/.netlify/functions/shopify-oauth-callback";
   const scopes = "write_customers";
