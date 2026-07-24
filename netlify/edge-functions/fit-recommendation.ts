@@ -73,6 +73,84 @@ function pick<T>(arr: T[]): T {
   return arr[Math.floor(Math.random() * arr.length)];
 }
 
+// Saves the raw measurements to the logged-in customer's alodd_fit.* metafields
+// so they show up in "My Profile". Best-effort: failures here never block the
+// fit recommendation response, they're just logged.
+async function saveMeasurementsToShopify(
+  customerEmail: string,
+  length: number,
+  girth: number,
+  instep: number
+): Promise<void> {
+  const shopDomain = Deno.env.get("SHOPIFY_STORE_DOMAIN");
+  const adminToken = Deno.env.get("SHOPIFY_ADMIN_TOKEN");
+
+  if (!shopDomain || !adminToken) {
+    console.error("Skipping metafield save: SHOPIFY_STORE_DOMAIN or SHOPIFY_ADMIN_TOKEN not set");
+    return;
+  }
+
+  const adminApiUrl = `https://${shopDomain}/admin/api/2025-01/graphql.json`;
+  const headers = {
+    "Content-Type": "application/json",
+    "X-Shopify-Access-Token": adminToken,
+  };
+
+  try {
+    // 1. Look up the customer's GID by email
+    const findCustomerQuery = `
+      query FindCustomer($query: String!) {
+        customers(first: 1, query: $query) {
+          edges { node { id } }
+        }
+      }
+    `;
+    const findResp = await fetch(adminApiUrl, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        query: findCustomerQuery,
+        variables: { query: `email:${customerEmail}` },
+      }),
+    });
+    const findData = await findResp.json();
+    const customerId = findData?.data?.customers?.edges?.[0]?.node?.id;
+
+    if (!customerId) {
+      console.error(`No Shopify customer found for email ${customerEmail}`);
+      return;
+    }
+
+    // 2. Write the measurements to the alodd_fit.* metafields
+    const metafieldsSetMutation = `
+      mutation SetFitMetafields($metafields: [MetafieldsSetInput!]!) {
+        metafieldsSet(metafields: $metafields) {
+          metafields { id key }
+          userErrors { field message }
+        }
+      }
+    `;
+    const metafields = [
+      { ownerId: customerId, namespace: "alodd_fit", key: "foot_length", type: "number_integer", value: String(Math.round(length)) },
+      { ownerId: customerId, namespace: "alodd_fit", key: "vertical_girth", type: "number_integer", value: String(Math.round(girth)) },
+      { ownerId: customerId, namespace: "alodd_fit", key: "instep", type: "number_integer", value: String(Math.round(instep)) },
+    ];
+
+    const setResp = await fetch(adminApiUrl, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ query: metafieldsSetMutation, variables: { metafields } }),
+    });
+    const setData = await setResp.json();
+    const userErrors = setData?.data?.metafieldsSet?.userErrors;
+    if (userErrors?.length) {
+      console.error("metafieldsSet userErrors:", JSON.stringify(userErrors));
+    }
+  } catch (err) {
+    console.error("saveMeasurementsToShopify failed:", String(err));
+  }
+}
+
 function buildFitNote(size: string, widthLabel: string, confidence: number): string {
   const w = widthLabel.toLowerCase();
   if (confidence >= 90) {
@@ -117,7 +195,7 @@ export default async (req: Request, context: Context) => {
     });
   }
 
-  const { length, girth, instep } = body;
+  const { length, girth, instep, customerEmail } = body;
   if (!length || !girth || !instep) {
     return new Response(
       JSON.stringify({ success: false, error: "Missing required measurements" }),
@@ -143,6 +221,12 @@ export default async (req: Request, context: Context) => {
     const confidence = Math.max(55, Math.min(98, Math.round(97 - totalDeviation * 1.1)));
 
     const fitNote = buildFitNote(matchedRow.size, widthLabel, confidence);
+
+    if (customerEmail) {
+      // Fire-and-forget: don't make the customer wait for the Shopify write,
+      // and don't fail the recommendation if it errors.
+      context.waitUntil(saveMeasurementsToShopify(customerEmail, length, girth, instep));
+    }
 
     const result = {
       size: matchedRow.size,
